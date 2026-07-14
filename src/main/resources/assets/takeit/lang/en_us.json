@@ -1,4 +1,5 @@
 {
   "key.categories.takeit": "TakeIt",
-  "key.takeit.pickup": "Pickup Items"
+  "key.takeit.pickup": "Pickup Items",
+  "key.takeit.pickupitem": "Pickup Item (On Crosshair)"
 }

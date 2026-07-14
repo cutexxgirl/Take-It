@@ -2,12 +2,18 @@ package com.cutexxgirl.takeit.events;
 
 import com.cutexxgirl.takeit.TakeIt;
 import com.cutexxgirl.takeit.TakeItConfig;
+import com.cutexxgirl.takeit.network.PacketClickPickup;
 import com.cutexxgirl.takeit.network.PacketHandler;
 import com.cutexxgirl.takeit.network.PacketPickup;
 import com.mojang.blaze3d.platform.InputConstants;
+import com.mojang.logging.LogUtils;
+
 import net.minecraft.client.KeyMapping;
+import net.minecraft.client.Minecraft;
+import net.minecraft.world.entity.item.ItemEntity;
+import net.minecraft.world.phys.EntityHitResult;
+import net.minecraft.world.phys.HitResult;
 import net.minecraftforge.api.distmarker.Dist;
-import net.minecraftforge.client.event.InputEvent;
 import net.minecraftforge.client.event.RegisterKeyMappingsEvent;
 import net.minecraftforge.client.settings.KeyConflictContext;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
@@ -16,7 +22,7 @@ import org.lwjgl.glfw.GLFW;
 
 /**
  * ClientEvents - Client-side only event handlers
- * 
+ *
  * This class handles events that only occur on the client (player's computer):
  * - Registers the pickup keybinding
  * - Detects when pickup key is pressed
@@ -38,15 +44,24 @@ public class ClientEvents {
             "key.categories.takeit"           // Category in controls menu
     );
 
+    public static final KeyMapping PICKUP_ITEM_KEY = new KeyMapping(
+            "key.takeit.pickupitem",          // Translation key (defined in lang files)
+            KeyConflictContext.IN_GAME,       // Only works when in-game (not in menus)
+            InputConstants.Type.MOUSE,       // Keyboard key type
+            GLFW.GLFW_MOUSE_BUTTON_2,         // Default key: Right Click
+            "key.categories.takeit"           // Category in controls menu
+    );
+
     /**
      * Register the keybinding
      * Called during mod initialization
-     * 
+     *
      * @param event The key registration event
      */
     @SubscribeEvent
     public static void registerKeys(RegisterKeyMappingsEvent event) {
         event.register(PICKUP_KEY);
+        event.register(PICKUP_ITEM_KEY);
     }
 
     /**
@@ -55,73 +70,38 @@ public class ClientEvents {
      */
     @Mod.EventBusSubscriber(modid = TakeIt.MOD_ID, value = Dist.CLIENT, bus = Mod.EventBusSubscriber.Bus.FORGE)
     public static class ForgeEvents {
-        // Tracks whether right mouse button was pressed last tick
-        // Used to detect the moment when button is first pressed (not held)
-        private static boolean wasRightClickPressed = false;
-
-        /**
-         * Handle keyboard input
-         * Detects when the pickup key (G) is pressed
-         * 
-         * @param event The key input event
-         */
-        @SubscribeEvent
-        public static void onKeyInput(InputEvent.Key event) {
-            if (PICKUP_KEY.consumeClick() && TakeItConfig.ENABLE_MOD.get()) {
-                // Only trigger if no GUI is open (prevents pickup while in inventory)
-                if (net.minecraft.client.Minecraft.getInstance().screen == null) {
-                    // Send packet to server to trigger radius pickup
-                    PacketHandler.INSTANCE.sendToServer(new PacketPickup());
-                }
-            }
-        }
-
-        /**
-         * Handle client tick - runs every game tick (20 times per second)
-         * Used to detect right-click on items
-         * 
-         * Why not use mouse input event?
-         * - Mouse input events don't fire reliably for item entities
-         * - Tick-based detection is more reliable for custom raycasting
-         * 
-         * @param event The client tick event
-         */
         @SubscribeEvent
         public static void onClientTick(net.minecraftforge.event.TickEvent.ClientTickEvent event) {
-            if (event.phase != net.minecraftforge.event.TickEvent.Phase.END) return;
-            if (!TakeItConfig.ENABLE_MOD.get()) return;
+            Minecraft mc = Minecraft.getInstance();
 
-            net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
-            if (mc.player == null || mc.screen != null) return;
+            if ((mc.player == null || mc.screen != null) && !TakeItConfig.ENABLE_MOD.get()) return;
 
-            // Check if right mouse button is currently pressed
-            boolean isRightClickPressed = mc.options.keyUse.isDown();
+            if (PICKUP_KEY.consumeClick()) {
+                // Send packet to server to trigger radius pickup
+                PacketHandler.INSTANCE.sendToServer(new PacketPickup());
+            }
 
-            // Only trigger on the rising edge (when button is first pressed, not while held)
-            if (isRightClickPressed && !wasRightClickPressed) {
-                // Vanilla hitResult ignores ItemEntity, so we must raycast manually
-                net.minecraft.world.phys.HitResult hit = pick(mc.player, 20.0F);
-                
-                if (hit != null && hit.getType() == net.minecraft.world.phys.HitResult.Type.ENTITY) {
-                    net.minecraft.world.phys.EntityHitResult entityHit = (net.minecraft.world.phys.EntityHitResult) hit;
-                    if (entityHit.getEntity() instanceof net.minecraft.world.entity.item.ItemEntity) {
+            if (PICKUP_ITEM_KEY.consumeClick()) {
+                HitResult hit = pick(mc.player, 20.0F);
+
+                if (hit != null && hit.getType() == HitResult.Type.ENTITY) {
+                    EntityHitResult entityHit = (EntityHitResult) hit;
+                    if (entityHit.getEntity() instanceof ItemEntity) {
                         // Send packet to server to pick up this specific item
-                        PacketHandler.INSTANCE.sendToServer(new com.cutexxgirl.takeit.network.PacketClickPickup(entityHit.getEntity().getId()));
-                        com.mojang.logging.LogUtils.getLogger().info("TakeIt: Sent click pickup packet for entity ID: {}", entityHit.getEntity().getId());
+                        PacketHandler.INSTANCE.sendToServer(new PacketClickPickup(entityHit.getEntity().getId()));
+                        LogUtils.getLogger().info("TakeIt: Sent click pickup packet for entity ID: {}", entityHit.getEntity().getId());
                     }
                 }
             }
-
-            wasRightClickPressed = isRightClickPressed;
         }
 
         /**
          * Custom raycast to find items the player is looking at
-         * 
+         *
          * Why custom raycast?
          * - Minecraft's default raycast ignores ItemEntity
          * - We need to specifically detect items for click-to-pickup
-         * 
+         *
          * @param player The player doing the raycasting
          * @param partialTicks Fraction of a tick (for smooth interpolation)
          * @return The hit result, or null if no item was hit
@@ -135,10 +115,10 @@ public class ClientEvents {
             net.minecraft.world.phys.Vec3 eyePos = player.getEyePosition(partialTicks);
             net.minecraft.world.phys.Vec3 viewVec = player.getViewVector(partialTicks);
             net.minecraft.world.phys.Vec3 endPos = eyePos.add(viewVec.x * reach, viewVec.y * reach, viewVec.z * reach);
-            
+
             // Create a search box along the view vector
             net.minecraft.world.phys.AABB searchBox = player.getBoundingBox().expandTowards(viewVec.scale(reach)).inflate(1.0D, 1.0D, 1.0D);
-            
+
             // Use ProjectileUtil to raycast and find the closest ItemEntity
             return net.minecraft.world.entity.projectile.ProjectileUtil.getEntityHitResult(
                     player,
@@ -148,7 +128,6 @@ public class ClientEvents {
                     (entity) -> entity instanceof net.minecraft.world.entity.item.ItemEntity, // Only look for items
                     reach * reach  // Max distance squared
             );
-        }
         }
     }
 }
